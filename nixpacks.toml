@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["python39", "poetry"]
+
+[phases.install]
+cmds = ["poetry install --no-dev"]
+
+[phases.build]
+cmds = ["poetry build"]
+
+[start]
+cmd = "poetry run fastapi run app/main.py --host 0.0.0.0 --port $PORT"
