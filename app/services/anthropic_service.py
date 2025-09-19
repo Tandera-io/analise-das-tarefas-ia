@@ -9,18 +9,33 @@ class AnthropicService:
         self.client = anthropic.Anthropic(
             api_key=os.getenv("ANTHROPIC_API_KEY")
         )
-    
+        self.model = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+
     async def test_connection(self) -> str:
         try:
-            response = self.client.completions.create(
-                model="claude-instant-1.2",
-                prompt="Human: Responda apenas 'Conexão OK' se você conseguir me ouvir.\n\nAssistant:",
-                max_tokens_to_sample=50
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=50,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "Responda apenas 'Conexão OK' se você conseguir me ouvir."
+                    }
+                ]
             )
-            return response.completion.strip()
+            text_parts = []
+            for part in getattr(response, "content", []) or []:
+                # SDKs podem retornar dicts ou objetos com .type/.text
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                else:
+                    if getattr(part, "type", None) == "text":
+                        text_parts.append(getattr(part, "text", ""))
+            return ("".join(text_parts)).strip() or ""
         except Exception as e:
             raise Exception(f"Erro na conexão com Anthropic: {str(e)}")
-    
+
     async def analyze_task_similarity(
         self,
         action_items: List[ActionItem],
@@ -28,24 +43,35 @@ class AnthropicService:
         meeting_title: str,
         meeting_summary: str = None
     ) -> List[MergeProposal]:
-        
-        prompt = self._build_analysis_prompt(
+
+        system_prompt, user_prompt = self._build_analysis_prompt(
             action_items, existing_tasks, meeting_title, meeting_summary
         )
-        
+
         try:
-            response = self.client.completions.create(
-                model="claude-instant-1.2",
-                prompt=f"Human: {prompt}\n\nAssistant:",
-                max_tokens_to_sample=2000
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=2000,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_prompt}
+                ]
             )
-            
-            response_text = response.completion.strip()
+
+            text_parts = []
+            for part in getattr(response, "content", []) or []:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                else:
+                    if getattr(part, "type", None) == "text":
+                        text_parts.append(getattr(part, "text", ""))
+            response_text = ("".join(text_parts)).strip()
             return self._parse_analysis_response(response_text, action_items, existing_tasks)
-            
+
         except Exception as e:
             raise Exception(f"Erro na análise Anthropic: {str(e)}")
-    
+
     def _build_analysis_prompt(
         self,
         action_items: List[ActionItem],
@@ -53,20 +79,22 @@ class AnthropicService:
         meeting_title: str,
         meeting_summary: str = None
     ) -> str:
-        
+
         action_items_text = "\n".join([
             f"- ID: {item.id}, Descrição: {item.description}, Responsável: {item.responsible or 'Não definido'}"
             for item in action_items
         ])
-        
+
         existing_tasks_text = "\n".join([
             f"- ID: {task.id}, Título: {task.title}, Status: {task.status}, Responsável: {task.responsible or 'Não definido'}, Descrição: {task.description or 'Sem descrição'}"
             for task in existing_tasks
         ])
-        
-        return f"""
-Você é um assistente especializado em análise de tarefas para o sistema Tandera. Sua função é identificar se novos action_items de uma reunião podem ser merges/atualizações de tarefas existentes.
 
+        system = (
+            "Você é um assistente especializado em análise de tarefas para o sistema Tandera. "
+            "Responda ESTRITAMENTE em JSON conforme o formato especificado, sem comentários extras."
+        )
+        user = f"""
 REUNIÃO ATUAL:
 Título: {meeting_title}
 Resumo: {meeting_summary or 'Não disponível'}
@@ -89,9 +117,9 @@ INSTRUÇÕES:
    - Justificativa do merge
 
 FORMATO DE RESPOSTA (JSON):
-{{
+{
   "merges": [
-    {{
+    {
       "parent_task_id": "id_da_tarefa_existente",
       "child_action_items": ["id1", "id2"],
       "similarity_score": 0.85,
@@ -99,32 +127,33 @@ FORMATO DE RESPOSTA (JSON):
       "proposed_status": "in_progress",
       "proposed_description": "Descrição atualizada se necessário",
       "reasoning": "Explicação do por que este merge faz sentido"
-    }}
+    }
   ]
-}}
+}
 
-Se não houver merges relevantes, retorne: {{"merges": []}}
+Se não houver merges relevantes, retorne: {"merges": []}
 
 Seja criterioso - apenas sugira merges quando houver clara relação entre as tarefas.
 """
-    
+        return system, user
+
     def _parse_analysis_response(
         self,
         response_text: str,
         action_items: List[ActionItem],
         existing_tasks: List[ExistingTask]
     ) -> List[MergeProposal]:
-        
+
         try:
             json_start = response_text.find('{')
             json_end = response_text.rfind('}') + 1
-            
+
             if json_start == -1 or json_end == 0:
                 return []
-            
+
             json_text = response_text[json_start:json_end]
             parsed = json.loads(json_text)
-            
+
             proposals = []
             for merge in parsed.get("merges", []):
                 proposal = MergeProposal(
@@ -137,8 +166,8 @@ Seja criterioso - apenas sugira merges quando houver clara relação entre as ta
                     reasoning=merge["reasoning"]
                 )
                 proposals.append(proposal)
-            
+
             return proposals
-            
+
         except Exception as e:
             return []

@@ -72,6 +72,10 @@ class SupabaseService:
             
             parent_task = parent_task_response.data[0]
             
+            previous_title = parent_task.get("title")
+            previous_status = parent_task.get("status")
+            previous_description = parent_task.get("description")
+
             updated_description = proposal.proposed_description or parent_task.get("description", "")
             if parent_task.get("description"):
                 updated_description = f"{parent_task['description']}\n\n--- Atualização da reunião ---\n{updated_description}"
@@ -89,6 +93,25 @@ class SupabaseService:
                     "updated_at": datetime.now().isoformat()
                 }).eq("id", action_item_id).execute()
             
+            # Registrar histórico do merge
+            try:
+                self.supabase.table("task_merge_history").insert({
+                    "parent_task_id": proposal.parent_task_id,
+                    "child_action_items": proposal.child_action_items,
+                    "similarity_score": proposal.similarity_score,
+                    "previous_title": previous_title,
+                    "previous_status": previous_status,
+                    "previous_description": previous_description,
+                    "new_title": proposal.proposed_title,
+                    "new_status": proposal.proposed_status,
+                    "new_description": updated_description,
+                    "reasoning": proposal.reasoning,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as history_error:
+                # Não bloquear o fluxo do merge se o histórico falhar
+                print(f"Aviso: falha ao registrar histórico do merge: {history_error}")
+
             return {
                 "merged_task_id": proposal.parent_task_id,
                 "updated_task": update_response.data[0] if update_response.data else None
