@@ -30,8 +30,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-anthropic_service = AnthropicService()
-supabase_service = SupabaseService()
+try:
+    anthropic_service = AnthropicService()
+except Exception as e:
+    print(f"Warning: Anthropic service initialization failed: {e}")
+    anthropic_service = None
+
+try:
+    supabase_service = SupabaseService()
+except Exception as e:
+    print(f"Warning: Supabase service initialization failed: {e}")
+    supabase_service = None
 
 @app.get("/api/health")
 async def health_check():
@@ -47,6 +56,12 @@ async def analyze_action_items(
     _: dict = Depends(verify_api_key)
 ):
     try:
+        if not supabase_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Supabase service não disponível"
+            )
+        
         existing_tasks = await supabase_service.get_active_tasks_for_project(
             request.project_id,
             request.meeting_title
@@ -120,6 +135,9 @@ async def get_merge_proposals(
 @app.get("/api/test-anthropic")
 async def test_anthropic():
     try:
+        if not anthropic_service:
+            return {"status": "error", "error": "Anthropic service não disponível"}
+        
         test_result = await anthropic_service.test_connection()
         return {"status": "success", "result": test_result}
     except Exception as e:

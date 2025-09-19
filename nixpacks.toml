@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python39", "poetry"]
+nixPkgs = ["python312", "poetry"]
 
 [phases.install]
 cmds = ["poetry install --no-dev"]

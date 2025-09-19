@@ -19,18 +19,7 @@ class AnthropicService:
             )
             return response.completion.strip()
         except Exception as e:
-            try:
-                message = self.client.messages.create(
-                    model="claude-3-sonnet-20240229",
-                    max_tokens=100,
-                    messages=[{
-                        "role": "user",
-                        "content": "Responda apenas 'Conexão OK' se você conseguir me ouvir."
-                    }]
-                )
-                return message.content[0].text
-            except Exception as e2:
-                raise Exception(f"Erro na conexão com Anthropic: {str(e2)}")
+            raise Exception(f"Erro na conexão com Anthropic: {str(e)}")
     
     async def analyze_task_similarity(
         self,
@@ -45,16 +34,13 @@ class AnthropicService:
         )
         
         try:
-            message = self.client.messages.create(
-                model="claude-3-sonnet-20240229",
-                max_tokens=2000,
-                messages=[{
-                    "role": "user",
-                    "content": prompt
-                }]
+            response = self.client.completions.create(
+                model="claude-instant-1.2",
+                prompt=f"Human: {prompt}\n\nAssistant:",
+                max_tokens_to_sample=2000
             )
             
-            response_text = message.content[0].text
+            response_text = response.completion.strip()
             return self._parse_analysis_response(response_text, action_items, existing_tasks)
             
         except Exception as e:
