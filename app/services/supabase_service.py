@@ -1,7 +1,7 @@
 import os
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ..models.analysis_models import ExistingTask, MergeProposal
 
 class SupabaseService:
@@ -56,7 +56,7 @@ class SupabaseService:
             
             if len(meeting_keywords.intersection(task_keywords)) >= 1:
                 filtered_tasks.append(task)
-            elif (datetime.now() - task.created_at).days <= 30:
+            elif (datetime.now(timezone.utc) - task.created_at).days <= 30:
                 filtered_tasks.append(task)
         
         return filtered_tasks[:20]
@@ -84,13 +84,13 @@ class SupabaseService:
                 "title": proposal.proposed_title,
                 "status": proposal.proposed_status,
                 "description": updated_description,
-                "updated_at": datetime.now().isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat()
             }).eq("id", proposal.parent_task_id).execute()
             
             for action_item_id in proposal.child_action_items:
                 self.supabase.table("action_items").update({
                     "status": "merged",
-                    "updated_at": datetime.now().isoformat()
+                    "updated_at": datetime.now(timezone.utc).isoformat()
                 }).eq("id", action_item_id).execute()
             
             # Registrar histórico do merge
@@ -106,7 +106,7 @@ class SupabaseService:
                     "new_status": proposal.proposed_status,
                     "new_description": updated_description,
                     "reasoning": proposal.reasoning,
-                    "created_at": datetime.now().isoformat()
+                    "created_at": datetime.now(timezone.utc).isoformat()
                 }).execute()
             except Exception as history_error:
                 # Não bloquear o fluxo do merge se o histórico falhar
