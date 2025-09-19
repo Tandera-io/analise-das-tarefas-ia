@@ -1,6 +1,7 @@
 import anthropic
 import os
 import json
+import textwrap
 from typing import List, Dict, Any
 from ..models.analysis_models import ActionItem, ExistingTask, MergeProposal
 
@@ -94,47 +95,53 @@ class AnthropicService:
             "Você é um assistente especializado em análise de tarefas para o sistema Tandera. "
             "Responda ESTRITAMENTE em JSON conforme o formato especificado, sem comentários extras."
         )
-        user = f"""
-REUNIÃO ATUAL:
-Título: {meeting_title}
-Resumo: {meeting_summary or 'Não disponível'}
+        example = {
+            "merges": [
+                {
+                    "parent_task_id": "id_da_tarefa_existente",
+                    "child_action_items": ["id1", "id2"],
+                    "similarity_score": 0.85,
+                    "proposed_title": "Título atualizado baseado na evolução",
+                    "proposed_status": "in_progress",
+                    "proposed_description": "Descrição atualizada se necessário",
+                    "reasoning": "Explicação do por que este merge faz sentido"
+                }
+            ]
+        }
+        empty_merges = {"merges": []}
 
-NOVOS ACTION ITEMS:
-{action_items_text}
+        user = textwrap.dedent(
+            f"""
+            REUNIÃO ATUAL:
+            Título: {meeting_title}
+            Resumo: {meeting_summary or 'Não disponível'}
 
-TAREFAS EXISTENTES ATIVAS (status 'pending', 'in_progress'):
-{existing_tasks_text}
+            NOVOS ACTION ITEMS:
+            {action_items_text}
 
-INSTRUÇÕES:
-1. Analise se algum dos novos action_items pode ser uma atualização/continuação de tarefas existentes
-2. Considere similaridade de conteúdo, contexto e responsáveis
-3. Para cada merge identificado, proponha:
-   - Qual tarefa existente seria a "mãe" (parent_task_id)
-   - Quais action_items seriam "filhos" (child_action_items)
-   - Score de similaridade (0.0 a 1.0)
-   - Novo título proposto para a tarefa mãe
-   - Novo status proposto (pending, in_progress, completed)
-   - Justificativa do merge
+            TAREFAS EXISTENTES ATIVAS (status 'pending', 'in_progress'):
+            {existing_tasks_text}
 
-FORMATO DE RESPOSTA (JSON):
-{
-  "merges": [
-    {
-      "parent_task_id": "id_da_tarefa_existente",
-      "child_action_items": ["id1", "id2"],
-      "similarity_score": 0.85,
-      "proposed_title": "Título atualizado baseado na evolução",
-      "proposed_status": "in_progress",
-      "proposed_description": "Descrição atualizada se necessário",
-      "reasoning": "Explicação do por que este merge faz sentido"
-    }
-  ]
-}
+            INSTRUÇÕES:
+            1. Analise se algum dos novos action_items pode ser uma atualização/continuação de tarefas existentes
+            2. Considere similaridade de conteúdo, contexto e responsáveis
+            3. Para cada merge identificado, proponha:
+               - Qual tarefa existente seria a "mãe" (parent_task_id)
+               - Quais action_items seriam "filhos" (child_action_items)
+               - Score de similaridade (0.0 a 1.0)
+               - Novo título proposto para a tarefa mãe
+               - Novo status proposto (pending, in_progress, completed)
+               - Justificativa do merge
 
-Se não houver merges relevantes, retorne: {"merges": []}
+            FORMATO DE RESPOSTA (JSON):
+            {json.dumps(example, ensure_ascii=False, indent=2)}
 
-Seja criterioso - apenas sugira merges quando houver clara relação entre as tarefas.
-"""
+            Se não houver merges relevantes, retorne:
+            {json.dumps(empty_merges, ensure_ascii=False)}
+
+            Seja criterioso - apenas sugira merges quando houver clara relação entre as tarefas.
+            """
+        ).strip()
         return system, user
 
     def _parse_analysis_response(
