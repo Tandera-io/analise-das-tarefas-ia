@@ -87,11 +87,8 @@ class SupabaseService:
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }).eq("id", proposal.parent_task_id).execute()
             
-            for action_item_id in proposal.child_action_items:
-                self.supabase.table("action_items").update({
-                    "status": "merged",
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                }).eq("id", action_item_id).execute()
+            # Observação: não alteramos mais o status dos action_items aqui
+            # para respeitar o check constraint do banco e evitar estados inválidos.
             
             # Registrar histórico do merge
             try:
