@@ -2,6 +2,7 @@ import os
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
+import re
 from ..models.analysis_models import ExistingTask, MergeProposal
 import logging
 import time
@@ -53,6 +54,64 @@ class SupabaseService:
             
         except Exception as e:
             raise Exception(f"Erro ao buscar tarefas: {str(e)}")
+
+    def _tokenize_reuniao(self, reuniao: str) -> List[str]:
+        if not reuniao:
+            return []
+        text = reuniao.lower()
+        # Remover datas comuns (yyyy-mm-dd, dd/mm/yyyy, dd-mm-yyyy, yyyymmdd)
+        text = re.sub(r"\b\d{4}[-/]?\d{2}[-/]?\d{2}\b", " ", text)
+        text = re.sub(r"\b\d{2}[-/]?\d{2}[-/]?\d{4}\b", " ", text)
+        # Separar por não alfanuméricos
+        tokens = re.split(r"[^a-z0-9]+", text)
+        stop = {
+            "", "gravacao", "gravação", "reuniao", "reunião", "meeting", "meet",
+            "audio", "video", "recording", "mp4", "wav", "m4a"
+        }
+        return [t for t in tokens if t not in stop and len(t) >= 2]
+
+    def _score_by_tokens(self, current_tokens: List[str], candidate_reuniao: str) -> int:
+        cand_tokens = set(self._tokenize_reuniao(candidate_reuniao))
+        return len(set(current_tokens).intersection(cand_tokens))
+
+    async def get_related_meetings(self, project_id: str, current_reuniao: str) -> List[Dict[str, Any]]:
+        try:
+            # Buscar transcrições do mesmo projeto nos últimos 90 dias
+            ninety_days_ago = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+            response = self.supabase.table("transcriptions").select(
+                "id,reuniao,created_at,transcription"
+            ).eq("project_id", project_id).gte("created_at", ninety_days_ago).order(
+                "created_at", desc=True
+            ).limit(100).execute()
+
+            current_tokens = set(self._tokenize_reuniao(current_reuniao))
+            scored: List[Dict[str, Any]] = []
+            for row in response.data or []:
+                score = self._score_by_tokens(list(current_tokens), row.get("reuniao") or "")
+                if score > 0:
+                    scored.append({**row, "_score": score})
+
+            # Ordenar por score desc e data desc, pegar top 3
+            scored.sort(key=lambda r: (r.get("_score", 0), r.get("created_at", "")), reverse=True)
+            top = scored[:3]
+
+            # Anexar action_items de cada transcrição
+            related: List[Dict[str, Any]] = []
+            for row in top:
+                ai_resp = self.supabase.table("action_items").select(
+                    "id,description,responsible,priority,deadline,status"
+                ).eq("transcription_id", row["id"]).order("created_at", desc=True).limit(50).execute()
+                related.append({
+                    "id": row["id"],
+                    "reuniao": row.get("reuniao"),
+                    "created_at": row.get("created_at"),
+                    "transcription": row.get("transcription"),
+                    "action_items": ai_resp.data or []
+                })
+
+            return related
+        except Exception as e:
+            raise Exception(f"Erro ao buscar reuniões correlatas: {str(e)}")
     
     def _filter_similar_meetings(
         self,

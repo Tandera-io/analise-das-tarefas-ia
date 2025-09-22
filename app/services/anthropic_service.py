@@ -4,6 +4,7 @@ import json
 import textwrap
 from typing import List, Dict, Any
 from ..models.analysis_models import ActionItem, ExistingTask, MergeProposal
+from .supabase_service import SupabaseService
 import logging
 import time
 
@@ -12,7 +13,8 @@ class AnthropicService:
         self.client = anthropic.Anthropic(
             api_key=os.getenv("ANTHROPIC_API_KEY")
         )
-        self.model = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+        self.model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+        self.supabase = SupabaseService()
 
     async def test_connection(self) -> str:
         try:
@@ -51,16 +53,24 @@ class AnthropicService:
         meeting_title: str,
         meeting_summary: str = None
     ) -> List[MergeProposal]:
+        # Buscar reuniões correlatas (até 3) com base no project_id e no campo "reuniao"
+        project_id = existing_tasks[0].project_id if existing_tasks else None
+        related_meetings: List[Dict[str, Any]] = []
+        if project_id:
+            try:
+                related_meetings = await self.supabase.get_related_meetings(project_id, meeting_title)
+            except Exception as _e:
+                related_meetings = []
 
         system_prompt, user_prompt = self._build_analysis_prompt(
-            action_items, existing_tasks, meeting_title, meeting_summary
+            action_items, existing_tasks, meeting_title, meeting_summary, related_meetings
         )
 
         try:
             start = time.perf_counter()
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=2000,
+                max_tokens=4000,
                 system=system_prompt,
                 messages=[
                     {"role": "user", "content": user_prompt}
@@ -91,7 +101,8 @@ class AnthropicService:
         action_items: List[ActionItem],
         existing_tasks: List[ExistingTask],
         meeting_title: str,
-        meeting_summary: str = None
+        meeting_summary: str = None,
+        related_meetings: List[Dict[str, Any]] = None
     ) -> str:
 
         action_items_text = "\n".join([
@@ -123,10 +134,29 @@ class AnthropicService:
         }
         empty_merges = {"merges": []}
 
+        # Montar bloco de reuniões correlatas
+        related_block_lines: List[str] = []
+        if related_meetings:
+            for rm in related_meetings:
+                ai_lines: List[str] = []
+                for ai in rm.get("action_items", []) or []:
+                    ai_lines.append(
+                        f"    - id: {ai.get('id')} | descrição: {ai.get('description')} | responsável: {ai.get('responsible') or 'Não definido'}"
+                    )
+                ai_text = "\n".join(ai_lines) if ai_lines else "    - (sem action_items)"
+                related_block_lines.append(textwrap.dedent(f"""
+                - id: {rm.get('id')} | reuniao: "{rm.get('reuniao','')}" | data: {rm.get('created_at','')}
+                  action_items:
+{ai_text}
+                  transcrição:
+                    """{(rm.get('transcription') or '')}"""
+                """))
+        related_block = "\n".join(related_block_lines) if related_block_lines else "(nenhuma reunião correlata encontrada)"
+
         user = textwrap.dedent(
             f"""
             REUNIÃO ATUAL:
-            Título: {meeting_title}
+            reuniao: {meeting_title}
             Resumo: {meeting_summary or 'Não disponível'}
 
             NOVOS ACTION ITEMS:
@@ -134,6 +164,9 @@ class AnthropicService:
 
             TAREFAS EXISTENTES ATIVAS (status 'pending', 'in_progress'):
             {existing_tasks_text}
+
+            REUNIÕES CORRELATAS (até 3, últimos 90 dias, mesmo project_id, por similaridade de `reuniao`; stopwords/datas ignoradas):
+            {related_block}
 
             INSTRUÇÕES:
             1. Analise se algum dos novos action_items pode ser uma atualização/continuação de tarefas existentes
