@@ -192,3 +192,25 @@ class SupabaseService:
             return []
         except Exception as e:
             raise Exception(f"Erro ao buscar propostas: {str(e)}")
+
+    # Grava/atualiza a razão da LIA quando não há merge para um action_item
+    async def upsert_lia_insight(self, action_item_id: str, reason: str) -> None:
+        try:
+            self.supabase.table("lia_insights").upsert({
+                "action_item_id": action_item_id,
+                "reason": reason,
+                "checked_at": datetime.now(timezone.utc).isoformat()
+            }, on_conflict="action_item_id").execute()
+        except Exception as e:
+            raise Exception(f"Erro ao salvar insight LIA: {str(e)}")
+
+    async def get_lia_insight(self, action_item_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            resp = self.supabase.table("lia_insights").select("reason,checked_at").eq(
+                "action_item_id", action_item_id
+            ).limit(1).execute()
+            if resp.data:
+                return resp.data[0]
+            return None
+        except Exception as e:
+            raise Exception(f"Erro ao buscar insight LIA: {str(e)}")

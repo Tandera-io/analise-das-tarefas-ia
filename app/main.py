@@ -92,7 +92,8 @@ async def analyze_action_items(
             return AnalysisResponse(
                 analyzed=True,
                 merge_proposals=[],
-                message="Nenhuma tarefa similar encontrada"
+                message="Nenhuma tarefa similar encontrada",
+                no_merge_notes=[]
             )
         
         merge_proposals = await anthropic_service.analyze_task_similarity(
@@ -102,10 +103,27 @@ async def analyze_action_items(
             request.meeting_summary
         )
         
+        # Gerar notas de não-merge a partir do diff entre AIs e merges
+        merged_ai_ids = set()
+        for mp in merge_proposals:
+            for ai in mp.child_action_items:
+                merged_ai_ids.add(ai)
+        no_merge_notes = []
+        for ai in request.action_items:
+            if ai.id not in merged_ai_ids:
+                reason = "Sem evidências claras de continuidade/duplicidade nas últimas reuniões correlatas."
+                no_merge_notes.append({"action_item_id": ai.id, "lia_reasoning": reason})
+                # persistir insight
+                try:
+                    await supabase_service.upsert_lia_insight(ai.id, reason)
+                except Exception:
+                    logger.warning("insight.persist_failed action_item_id=%s", ai.id)
+
         resp = AnalysisResponse(
             analyzed=True,
             merge_proposals=merge_proposals,
-            message=f"Encontradas {len(merge_proposals)} propostas de merge"
+            message=f"Encontradas {len(merge_proposals)} propostas de merge",
+            no_merge_notes=no_merge_notes
         )
         logger.info(
             "analyze.done project_id=%s proposals=%d duration_ms=%d",
@@ -188,3 +206,15 @@ async def test_anthropic():
     except Exception as e:
         logger.exception("anthropic.test_error error=%s", str(e))
         return {"status": "error", "error": str(e)}
+
+@app.get("/api/insights/{action_item_id}")
+async def get_insight(action_item_id: str, _: dict = Depends(verify_api_key)):
+    try:
+        if not supabase_service:
+            raise HTTPException(status_code=503, detail="Supabase service não disponível")
+        data = await supabase_service.get_lia_insight(action_item_id)
+        if not data:
+            return {"found": False}
+        return {"found": True, "lia_reasoning": data.get("reason"), "checked_at": data.get("checked_at")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar insight: {str(e)}")

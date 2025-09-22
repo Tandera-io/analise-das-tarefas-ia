@@ -44,3 +44,5 @@ class AnalysisResponse(BaseModel):
     merge_proposals: List[MergeProposal]
     message: str
     lia_reviewed: bool = True
+    # Novas notas quando não houver merge por action_item
+    no_merge_notes: List[Dict[str, str]] = []  # { action_item_id, lia_reasoning }
