@@ -76,31 +76,16 @@ class AnthropicService:
 
         try:
             start = time.perf_counter()
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4000,
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": user_prompt}
-                ]
+            response_text, used_model = self._call_messages_with_fallback(
+                system_prompt, user_prompt
             )
-
-            text_parts = []
-            for part in getattr(response, "content", []) or []:
-                if isinstance(part, dict):
-                    if part.get("type") == "text":
-                        text_parts.append(part.get("text", ""))
-                else:
-                    if getattr(part, "type", None) == "text":
-                        text_parts.append(getattr(part, "text", ""))
-            response_text = ("".join(text_parts)).strip()
             logging.getLogger("analise_das_tarefas_ia").info(
-                "anthropic.analyze duration_ms=%d chars=%d",
+                "anthropic.analyze model=%s duration_ms=%d chars=%d",
+                used_model,
                 int((time.perf_counter() - start) * 1000),
                 len(response_text),
             )
             return self._parse_analysis_response(response_text, action_items, existing_tasks)
-
         except Exception as e:
             raise Exception(f"Erro na análise Anthropic: {str(e)}")
 
@@ -199,6 +184,56 @@ class AnthropicService:
             """
         ).strip()
         return system, user
+
+    def _call_messages_with_fallback(self, system_prompt: str, user_prompt: str) -> (str, str):
+        """Chama Anthropic Messages com fallback de modelo se receber 404/not_found.
+
+        Retorna (response_text, used_model).
+        """
+        candidates = []
+        # modelo preferido (env)
+        if self.model:
+            candidates.append(self.model)
+        # fallback conhecidos
+        if "claude-3-5-sonnet-20240620" not in candidates:
+            candidates.append("claude-3-5-sonnet-20240620")
+        if "claude-3-haiku-20240307" not in candidates:
+            candidates.append("claude-3-haiku-20240307")
+
+        last_error: Exception | None = None
+        for model in candidates:
+            try:
+                resp = self.client.messages.create(
+                    model=model,
+                    max_tokens=4000,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
+                parts = []
+                for part in getattr(resp, "content", []) or []:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            parts.append(part.get("text", ""))
+                    else:
+                        if getattr(part, "type", None) == "text":
+                            parts.append(getattr(part, "text", ""))
+                return ("".join(parts)).strip(), model
+            except anthropic.NotFoundError as nf:
+                logging.getLogger("analise_das_tarefas_ia").warning(
+                    "anthropic.model_not_found model=%s error=%s", model, str(nf)
+                )
+                last_error = nf
+                continue
+            except Exception as e:
+                last_error = e
+                logging.getLogger("analise_das_tarefas_ia").warning(
+                    "anthropic.call_error model=%s error=%s", model, str(e)
+                )
+                # Em erros de rede/handshake, tentar próximo candidato também
+                continue
+
+        # Se todos falharem, propagar o último erro
+        raise last_error if last_error else Exception("Erro desconhecido na chamada Anthropic")
 
     def _parse_analysis_response(
         self,
