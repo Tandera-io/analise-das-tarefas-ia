@@ -144,13 +144,15 @@ class AnthropicService:
                         f"    - id: {ai.get('id')} | descrição: {ai.get('description')} | responsável: {ai.get('responsible') or 'Não definido'}"
                     )
                 ai_text = "\n".join(ai_lines) if ai_lines else "    - (sem action_items)"
-                related_block_lines.append(textwrap.dedent(f"""
-                - id: {rm.get('id')} | reuniao: "{rm.get('reuniao','')}" | data: {rm.get('created_at','')}
-                  action_items:
-{ai_text}
-                  transcrição:
-                    """{(rm.get('transcription') or '')}"""
-                """))
+                trans_text = (rm.get('transcription') or '')
+                block = textwrap.dedent(
+                    f"- id: {rm.get('id')} | reuniao: \"{rm.get('reuniao','')}\" | data: {rm.get('created_at','')}\n"
+                    "  action_items:\n"
+                    f"{ai_text}\n"
+                    "  transcrição:\n"
+                    f"    {trans_text}"
+                )
+                related_block_lines.append(block)
         related_block = "\n".join(related_block_lines) if related_block_lines else "(nenhuma reunião correlata encontrada)"
 
         user = textwrap.dedent(
