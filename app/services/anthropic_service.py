@@ -7,11 +7,19 @@ from ..models.analysis_models import ActionItem, ExistingTask, MergeProposal
 from .supabase_service import SupabaseService
 import logging
 import time
+import httpx
 
 class AnthropicService:
     def __init__(self):
+        # Forçar HTTP/1.1 e configurar timeouts/retries para evitar erros de handshake/TLS
+        http_client = httpx.Client(
+            http2=False,
+            timeout=httpx.Timeout(60.0, connect=30.0, read=60.0, write=60.0),
+            transport=httpx.HTTPTransport(retries=3)
+        )
         self.client = anthropic.Anthropic(
-            api_key=os.getenv("ANTHROPIC_API_KEY")
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            http_client=http_client
         )
         self.model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
         self.supabase = SupabaseService()
