@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 from dotenv import load_dotenv
+import logging
+import time
 
 from .services.anthropic_service import AnthropicService
 from .services.supabase_service import SupabaseService
@@ -11,9 +13,16 @@ from .middleware.auth import verify_api_key
 
 load_dotenv()
 
+# Logger básico
+logger = logging.getLogger("analise_das_tarefas_ia")
+if not logger.handlers:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("service.starting")
     yield
+    logger.info("service.stopped")
 
 app = FastAPI(
     title="Análise das Tarefas IA",
@@ -32,12 +41,16 @@ app.add_middleware(
 
 try:
     anthropic_service = AnthropicService()
+    logger.info(
+        "anthropic.initialized model=%s", getattr(anthropic_service, "model", "unknown")
+    )
 except Exception as e:
     print(f"Warning: Anthropic service initialization failed: {e}")
     anthropic_service = None
 
 try:
     supabase_service = SupabaseService()
+    logger.info("supabase.initialized")
 except Exception as e:
     print(f"Warning: Supabase service initialization failed: {e}")
     supabase_service = None
@@ -56,6 +69,13 @@ async def analyze_action_items(
     _: dict = Depends(verify_api_key)
 ):
     try:
+        start = time.perf_counter()
+        logger.info(
+            "analyze.start project_id=%s action_items=%d meeting_title=%s",
+            request.project_id,
+            len(request.action_items),
+            request.meeting_title,
+        )
         if not supabase_service:
             raise HTTPException(
                 status_code=503,
@@ -68,6 +88,7 @@ async def analyze_action_items(
         )
         
         if not existing_tasks:
+            logger.info("analyze.no_tasks project_id=%s", request.project_id)
             return AnalysisResponse(
                 analyzed=True,
                 merge_proposals=[],
@@ -81,13 +102,21 @@ async def analyze_action_items(
             request.meeting_summary
         )
         
-        return AnalysisResponse(
+        resp = AnalysisResponse(
             analyzed=True,
             merge_proposals=merge_proposals,
             message=f"Encontradas {len(merge_proposals)} propostas de merge"
         )
+        logger.info(
+            "analyze.done project_id=%s proposals=%d duration_ms=%d",
+            request.project_id,
+            len(merge_proposals),
+            int((time.perf_counter() - start) * 1000),
+        )
+        return resp
         
     except Exception as e:
+        logger.exception("analyze.error project_id=%s error=%s", request.project_id, str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Erro na análise: {str(e)}"
@@ -99,13 +128,26 @@ async def propose_merge(
     _: dict = Depends(verify_api_key)
 ):
     try:
+        start = time.perf_counter()
+        logger.info(
+            "merge.start parent_task_id=%s children=%d",
+            proposal.parent_task_id,
+            len(proposal.child_action_items),
+        )
         result = await supabase_service.execute_task_merge(proposal)
-        return {
+        resp = {
             "success": True,
             "merged_task_id": result.get("merged_task_id"),
             "message": "Merge executado com sucesso"
         }
+        logger.info(
+            "merge.done parent_task_id=%s duration_ms=%d",
+            proposal.parent_task_id,
+            int((time.perf_counter() - start) * 1000),
+        )
+        return resp
     except Exception as e:
+        logger.exception("merge.error parent_task_id=%s error=%s", proposal.parent_task_id, str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Erro no merge: {str(e)}"
@@ -122,11 +164,13 @@ async def get_merge_proposals(
             raise HTTPException(status_code=400, detail="project_id é obrigatório")
         
         proposals = await supabase_service.get_pending_merge_proposals(project_id)
+        logger.info("proposals.fetch project_id=%s count=%d", project_id, len(proposals or []))
         return {
             "success": True,
             "proposals": proposals
         }
     except Exception as e:
+        logger.exception("proposals.error project_id=%s error=%s", request.get("project_id"), str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao buscar propostas: {str(e)}"
@@ -139,6 +183,8 @@ async def test_anthropic():
             return {"status": "error", "error": "Anthropic service não disponível"}
         
         test_result = await anthropic_service.test_connection()
+        logger.info("anthropic.test_ok result=%s", test_result)
         return {"status": "success", "result": test_result}
     except Exception as e:
+        logger.exception("anthropic.test_error error=%s", str(e))
         return {"status": "error", "error": str(e)}

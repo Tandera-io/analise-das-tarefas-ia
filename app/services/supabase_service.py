@@ -3,6 +3,8 @@ from supabase import create_client, Client
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from ..models.analysis_models import ExistingTask, MergeProposal
+import logging
+import time
 
 class SupabaseService:
     def __init__(self):
@@ -16,6 +18,7 @@ class SupabaseService:
         meeting_title: str
     ) -> List[ExistingTask]:
         try:
+            start = time.perf_counter()
             response = self.supabase.table("kanban_tasks").select("*").eq(
                 "project_id", project_id
             ).in_(
@@ -38,7 +41,15 @@ class SupabaseService:
                 )
                 tasks.append(task)
             
-            return self._filter_similar_meetings(tasks, meeting_title)
+            filtered = self._filter_similar_meetings(tasks, meeting_title)
+            logging.getLogger("analise_das_tarefas_ia").info(
+                "supabase.tasks project_id=%s fetched=%d filtered=%d duration_ms=%d",
+                project_id,
+                len(tasks),
+                len(filtered),
+                int((time.perf_counter() - start) * 1000),
+            )
+            return filtered
             
         except Exception as e:
             raise Exception(f"Erro ao buscar tarefas: {str(e)}")

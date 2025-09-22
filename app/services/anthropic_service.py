@@ -4,6 +4,8 @@ import json
 import textwrap
 from typing import List, Dict, Any
 from ..models.analysis_models import ActionItem, ExistingTask, MergeProposal
+import logging
+import time
 
 class AnthropicService:
     def __init__(self):
@@ -14,6 +16,7 @@ class AnthropicService:
 
     async def test_connection(self) -> str:
         try:
+            start = time.perf_counter()
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=50,
@@ -33,7 +36,11 @@ class AnthropicService:
                 else:
                     if getattr(part, "type", None) == "text":
                         text_parts.append(getattr(part, "text", ""))
-            return ("".join(text_parts)).strip() or ""
+            result = ("".join(text_parts)).strip() or ""
+            logging.getLogger("analise_das_tarefas_ia").info(
+                "anthropic.test duration_ms=%d", int((time.perf_counter() - start) * 1000)
+            )
+            return result
         except Exception as e:
             raise Exception(f"Erro na conexão com Anthropic: {str(e)}")
 
@@ -50,6 +57,7 @@ class AnthropicService:
         )
 
         try:
+            start = time.perf_counter()
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=2000,
@@ -68,6 +76,11 @@ class AnthropicService:
                     if getattr(part, "type", None) == "text":
                         text_parts.append(getattr(part, "text", ""))
             response_text = ("".join(text_parts)).strip()
+            logging.getLogger("analise_das_tarefas_ia").info(
+                "anthropic.analyze duration_ms=%d chars=%d",
+                int((time.perf_counter() - start) * 1000),
+                len(response_text),
+            )
             return self._parse_analysis_response(response_text, action_items, existing_tasks)
 
         except Exception as e:
