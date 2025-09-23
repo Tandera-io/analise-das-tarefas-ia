@@ -96,7 +96,7 @@ async def analyze_action_items(
                 no_merge_notes=[]
             )
         
-        merge_proposals = await anthropic_service.analyze_task_similarity(
+        analysis = await anthropic_service.analyze_task_similarity(
             request.action_items,
             existing_tasks,
             request.meeting_title,
@@ -105,30 +105,33 @@ async def analyze_action_items(
         
         # Gerar notas de não-merge a partir do diff entre AIs e merges
         merged_ai_ids = set()
-        for mp in merge_proposals:
+        for mp in analysis.get("merge_proposals", []):
             for ai in mp.child_action_items:
                 merged_ai_ids.add(ai)
-        no_merge_notes = []
+        # Unir notas vindas da IA + fallback para itens não cobertos
+        no_merge_notes = analysis.get("no_merge_notes", [])
+        existing_noted = {n["action_item_id"] for n in no_merge_notes}
         for ai in request.action_items:
             if ai.id not in merged_ai_ids:
-                reason = "Sem evidências claras de continuidade/duplicidade nas últimas reuniões correlatas."
-                no_merge_notes.append({"action_item_id": ai.id, "lia_reasoning": reason})
+                if ai.id not in existing_noted:
+                    reason = "Sem evidências claras de continuidade/duplicidade nas últimas reuniões correlatas."
+                    no_merge_notes.append({"action_item_id": ai.id, "lia_reasoning": reason})
                 # persistir insight
                 try:
-                    await supabase_service.upsert_lia_insight(ai.id, reason)
+                    await supabase_service.upsert_lia_insight(ai.id, next((n["lia_reasoning"] for n in no_merge_notes if n["action_item_id"] == ai.id), reason))
                 except Exception:
                     logger.warning("insight.persist_failed action_item_id=%s", ai.id)
 
         resp = AnalysisResponse(
             analyzed=True,
-            merge_proposals=merge_proposals,
-            message=f"Encontradas {len(merge_proposals)} propostas de merge",
+            merge_proposals=analysis.get("merge_proposals", []),
+            message=f"Encontradas {len(analysis.get('merge_proposals', []))} propostas de merge",
             no_merge_notes=no_merge_notes
         )
         logger.info(
             "analyze.done project_id=%s proposals=%d duration_ms=%d",
             request.project_id,
-            len(merge_proposals),
+            len(analysis.get("merge_proposals", [])),
             int((time.perf_counter() - start) * 1000),
         )
         return resp

@@ -2,7 +2,7 @@ import anthropic
 import os
 import json
 import textwrap
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from ..models.analysis_models import ActionItem, ExistingTask, MergeProposal
 from .supabase_service import SupabaseService
 import logging
@@ -21,7 +21,8 @@ class AnthropicService:
             api_key=os.getenv("ANTHROPIC_API_KEY"),
             http_client=http_client
         )
-        self.model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+        # Modelo preferido
+        self.model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
         self.supabase = SupabaseService()
 
     async def test_connection(self) -> str:
@@ -60,7 +61,7 @@ class AnthropicService:
         existing_tasks: List[ExistingTask],
         meeting_title: str,
         meeting_summary: str = None
-    ) -> List[MergeProposal]:
+    ) -> Dict[str, Any]:
         # Buscar reuniões correlatas (até 3) com base no project_id e no campo "reuniao"
         project_id = existing_tasks[0].project_id if existing_tasks else None
         related_meetings: List[Dict[str, Any]] = []
@@ -70,22 +71,33 @@ class AnthropicService:
             except Exception as _e:
                 related_meetings = []
 
-        system_prompt, user_prompt = self._build_analysis_prompt(
-            action_items, existing_tasks, meeting_title, meeting_summary, related_meetings
-        )
+        # Chunking: processar action_items em blocos (até 20) para não estourar contexto
+        chunk_size = int(os.getenv("ANALYZE_CHUNK_SIZE", "20"))
+        chunks: List[List[ActionItem]] = [
+            action_items[i:i+chunk_size] for i in range(0, len(action_items), chunk_size)
+        ]
 
+        all_merges: List[MergeProposal] = []
+        all_notes: List[Dict[str, str]] = []
         try:
-            start = time.perf_counter()
-            response_text, used_model = self._call_messages_with_fallback(
-                system_prompt, user_prompt
-            )
-            logging.getLogger("analise_das_tarefas_ia").info(
-                "anthropic.analyze model=%s duration_ms=%d chars=%d",
-                used_model,
-                int((time.perf_counter() - start) * 1000),
-                len(response_text),
-            )
-            return self._parse_analysis_response(response_text, action_items, existing_tasks)
+            for idx, chunk in enumerate(chunks):
+                system_prompt, user_prompt = self._build_analysis_prompt(
+                    chunk, existing_tasks, meeting_title, meeting_summary, related_meetings
+                )
+                start = time.perf_counter()
+                response_text, used_model = self._call_messages_with_fallback(
+                    system_prompt, user_prompt
+                )
+                logging.getLogger("analise_das_tarefas_ia").info(
+                    "anthropic.analyze chunk=%d/%d model=%s duration_ms=%d chars=%d",
+                    idx+1, len(chunks), used_model,
+                    int((time.perf_counter() - start) * 1000),
+                    len(response_text),
+                )
+                merges, notes = self._parse_analysis_response(response_text)
+                all_merges.extend(merges)
+                all_notes.extend(notes)
+            return {"merge_proposals": all_merges, "no_merge_notes": all_notes}
         except Exception as e:
             raise Exception(f"Erro na análise Anthropic: {str(e)}")
 
@@ -121,11 +133,15 @@ class AnthropicService:
                     "proposed_title": "Título atualizado baseado na evolução",
                     "proposed_status": "in_progress",
                     "proposed_description": "Descrição atualizada se necessário",
-                    "reasoning": "Explicação do por que este merge faz sentido"
+                    "reasoning": "Explicação do por que este merge faz sentido",
+                    "source_meetings_used": ["tr-1","tr-2"]
                 }
+            ],
+            "no_merge_notes": [
+                {"action_item_id": "ai-3", "lia_reasoning": "Sem evidência clara de continuidade nas 3 últimas reuniões correlatas."}
             ]
         }
-        empty_merges = {"merges": []}
+        empty_merges = {"merges": [], "no_merge_notes": []}
 
         # Montar bloco de reuniões correlatas
         related_block_lines: List[str] = []
@@ -180,12 +196,13 @@ class AnthropicService:
             Se não houver merges relevantes, retorne:
             {json.dumps(empty_merges, ensure_ascii=False)}
 
+            Para cada action_item SEM merge, inclua em no_merge_notes um motivo curto e objetivo do porquê não houve merge.
             Seja criterioso - apenas sugira merges quando houver clara relação entre as tarefas.
             """
         ).strip()
         return system, user
 
-    def _call_messages_with_fallback(self, system_prompt: str, user_prompt: str) -> (str, str):
+    def _call_messages_with_fallback(self, system_prompt: str, user_prompt: str) -> Tuple[str, str]:
         """Chama Anthropic Messages com fallback de modelo se receber 404/not_found.
 
         Retorna (response_text, used_model).
@@ -199,25 +216,32 @@ class AnthropicService:
             candidates.append("claude-3-5-sonnet-20240620")
         if "claude-3-haiku-20240307" not in candidates:
             candidates.append("claude-3-haiku-20240307")
+        # OpenAI fallback
+        if "gpt-4.1" not in candidates:
+            candidates.append("gpt-4.1")
 
         last_error: Exception | None = None
         for model in candidates:
             try:
-                resp = self.client.messages.create(
-                    model=model,
-                    max_tokens=4000,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_prompt}],
-                )
-                parts = []
-                for part in getattr(resp, "content", []) or []:
-                    if isinstance(part, dict):
-                        if part.get("type") == "text":
-                            parts.append(part.get("text", ""))
-                    else:
-                        if getattr(part, "type", None) == "text":
-                            parts.append(getattr(part, "text", ""))
-                return ("".join(parts)).strip(), model
+                if model.startswith("gpt-"):
+                    text = self._call_openai(system_prompt, user_prompt, model)
+                    return text, model
+                else:
+                    resp = self.client.messages.create(
+                        model=model,
+                        max_tokens=4000,
+                        system=system_prompt,
+                        messages=[{"role": "user", "content": user_prompt}],
+                    )
+                    parts = []
+                    for part in getattr(resp, "content", []) or []:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text":
+                                parts.append(part.get("text", ""))
+                        else:
+                            if getattr(part, "type", None) == "text":
+                                parts.append(getattr(part, "text", ""))
+                    return ("".join(parts)).strip(), model
             except anthropic.NotFoundError as nf:
                 logging.getLogger("analise_das_tarefas_ia").warning(
                     "anthropic.model_not_found model=%s error=%s", model, str(nf)
@@ -233,26 +257,48 @@ class AnthropicService:
                 continue
 
         # Se todos falharem, propagar o último erro
-        raise last_error if last_error else Exception("Erro desconhecido na chamada Anthropic")
+        raise last_error if last_error else Exception("Erro desconhecido na chamada Anthropic/OpenAI")
+
+    def _call_openai(self, system_prompt: str, user_prompt: str, model: str) -> str:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise Exception("OPENAI_API_KEY não configurada para fallback GPT-4.1")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.2,
+            "max_tokens": 4000
+        }
+        resp = httpx.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return content.strip()
 
     def _parse_analysis_response(
         self,
-        response_text: str,
-        action_items: List[ActionItem],
-        existing_tasks: List[ExistingTask]
-    ) -> List[MergeProposal]:
+        response_text: str
+    ) -> Tuple[List[MergeProposal], List[Dict[str, str]]]:
 
         try:
             json_start = response_text.find('{')
             json_end = response_text.rfind('}') + 1
 
             if json_start == -1 or json_end == 0:
-                return []
+                return [], []
 
             json_text = response_text[json_start:json_end]
             parsed = json.loads(json_text)
 
-            proposals = []
+            proposals: List[MergeProposal] = []
+            no_merge_notes: List[Dict[str, str]] = []
             for merge in parsed.get("merges", []):
                 proposal = MergeProposal(
                     parent_task_id=merge["parent_task_id"],
@@ -264,8 +310,14 @@ class AnthropicService:
                     reasoning=merge["reasoning"]
                 )
                 proposals.append(proposal)
+            for note in parsed.get("no_merge_notes", []):
+                if note.get("action_item_id") and note.get("lia_reasoning"):
+                    no_merge_notes.append({
+                        "action_item_id": note["action_item_id"],
+                        "lia_reasoning": note["lia_reasoning"]
+                    })
 
-            return proposals
+            return proposals, no_merge_notes
 
         except Exception as e:
-            return []
+            return [], []
