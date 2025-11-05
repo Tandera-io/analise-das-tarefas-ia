@@ -39,6 +39,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Adicionar middleware de tenant (DEPOIS do CORS para que OPTIONS seja processado primeiro)
+from .middleware.tenant import TenantMiddleware
+app.add_middleware(TenantMiddleware)
+
 try:
     anthropic_service = AnthropicService()
     logger.info(

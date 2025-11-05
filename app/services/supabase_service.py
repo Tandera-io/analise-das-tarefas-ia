@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlparse
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
@@ -7,10 +8,36 @@ from ..models.analysis_models import ExistingTask, MergeProposal
 import logging
 import time
 
+logger = logging.getLogger(__name__)
+
+def _clean_env_value(v: str) -> str:
+    return (v or "").strip().strip('"').strip("'")
+
 class SupabaseService:
     def __init__(self):
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_KEY")
+        """Inicializa cliente Supabase com suporte multi-tenancy"""
+        # Tentar obter credenciais do contexto do tenant (multi-tenancy)
+        try:
+            from ..middleware.tenant import get_tenant_context
+            tenant_ctx = get_tenant_context()
+            if tenant_ctx.tenant_slug and tenant_ctx.tenant_data:
+                url = tenant_ctx.get_supabase_url()
+                key = tenant_ctx.get_anon_key()
+                
+                if url and key:
+                    logger.info(f"[Supabase] Usando credenciais do tenant: {tenant_ctx.tenant_slug}")
+                    parsed = urlparse(url)
+                    if parsed.scheme and parsed.netloc:
+                        self.supabase: Client = create_client(url, key)
+                        return
+                    else:
+                        logger.warning(f"[Supabase] URL do tenant inválida: {url}, usando fallback")
+        except Exception as e:
+            logger.debug(f"[Supabase] Tenant context não disponível, usando credenciais padrão: {e}")
+        
+        # Fallback para credenciais padrão do .env
+        url = _clean_env_value(os.getenv("SUPABASE_URL") or "")
+        key = _clean_env_value(os.getenv("SUPABASE_KEY") or "")
         self.supabase: Client = create_client(url, key)
     
     async def get_active_tasks_for_project(
